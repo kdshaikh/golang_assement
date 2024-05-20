@@ -39,39 +39,20 @@ func createVideoSources() []VideoSource {
 	return sources
 }
 
-func StreamVideo(sources []VideoSource, wg *sync.WaitGroup) {
+func StreamVideo(sources []VideoSource, wg *sync.WaitGroup, segmentChan chan<- VideoSegment) {
 	defer wg.Done()
-	var segments []VideoSegment
 	for _, source := range sources {
 		for i := 1; i <= 3; i++ { // Fetch 3 segments from each source
 			segment := source.FetchSegment(i)
 			fmt.Printf("%s: %s fetched successfully\n", segment.source, segment.data)
-			segments = append(segments, segment)
+			segmentChan <- segment
 		}
 	}
-	fmt.Println("Video streaming completed using FanOut pattern")
-	fmt.Println("Waiting for video segments to be aggregated...")
-	aggregateVideoSegments(segments)
 }
 
-func aggregateVideoSegments(segments []VideoSegment) {
-	var wg sync.WaitGroup
-	aggregatedSegments := make(chan VideoSegment, len(segments))
-
-	for _, segment := range segments {
-		wg.Add(1)
-		go func(segment VideoSegment) {
-			defer wg.Done()
-			aggregatedSegments <- segment
-		}(segment)
-	}
-
-	go func() {
-		wg.Wait()
-		close(aggregatedSegments)
-	}()
-
-	for segment := range aggregatedSegments {
+func aggregateVideoSegments(segmentChan <-chan VideoSegment, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for segment := range segmentChan {
 		fmt.Printf("Received segment %d from %s\n", segment.segmentID, segment.source)
 		// Process the received segment
 	}
@@ -84,12 +65,26 @@ func aggregateVideoSegments(segments []VideoSegment) {
 
 func main() {
 	var wg sync.WaitGroup
+	var cg sync.WaitGroup
 
 	sources := createVideoSources()
 	fmt.Println("All sources->", sources)
 
-	wg.Add(1)
-	go StreamVideo(sources, &wg)
+	// Channel for collecting video segments
+	segmentChan := make(chan VideoSegment)
 
+	// Fan-out: Start goroutines to fetch segments from each source concurrently
+	wg.Add(len(sources))
+	for _, source := range sources {
+		go StreamVideo([]VideoSource{source}, &wg, segmentChan)
+	}
+
+	// Fan-in: Start goroutine to aggregate segments
+	cg.Add(1)
+	go aggregateVideoSegments(segmentChan, &cg)
+
+	// Wait for all goroutines to finish
 	wg.Wait()
+	close(segmentChan)
+	cg.Wait()
 }
